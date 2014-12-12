@@ -20,7 +20,7 @@ module PgHero
     def running_queries
       select_all %Q{
         SELECT
-          pid,
+          #{pid_field_name} as pid,
           state,
           application_name AS source,
           age(now(), xact_start) AS duration,
@@ -41,7 +41,7 @@ module PgHero
     def long_running_queries
       select_all %Q{
         SELECT
-          pid,
+          #{pid_field_name} as pid,
           state,
           application_name AS source,
           age(now(), xact_start) AS duration,
@@ -63,17 +63,17 @@ module PgHero
     def locks
       select_all %Q{
         SELECT DISTINCT ON (pid)
-          pg_stat_activity.pid,
+          pg_stat_activity.#{pid_field_name} as pid,
           pg_stat_activity.query,
           age(now(), pg_stat_activity.query_start) AS age
         FROM
           pg_stat_activity
         INNER JOIN
-          pg_locks ON pg_locks.pid = pg_stat_activity.pid
+          pg_locks ON pg_locks.pid = pg_stat_activity.#{pid_field_name}
         WHERE
           pg_stat_activity.query <> '<insufficient privilege>'
           AND pg_locks.mode = 'ExclusiveLock'
-          AND pg_stat_activity.pid <> pg_backend_pid()
+          AND pg_stat_activity.#{pid_field_name} <> pg_backend_pid()
         ORDER BY
           pid,
           query_start
@@ -434,11 +434,23 @@ module PgHero
     def execute(sql)
       connection.execute(sql)
     end
-
+    
+    def pid_field_name
+      if db_version > 90200
+        "pid"
+      else
+        "procpid"
+      end
+    end
+    
+    def db_version
+      @db_version ||= connection.select_value("SELECT current_setting('server_version_num')").to_i
+    end
+    
     def connection
       @connection ||= Connection.connection
     end
-
+    
     # from ActiveSupport
     def squish(str)
       str.to_s.gsub(/\A[[:space:]]+/, '').gsub(/[[:space:]]+\z/, '').gsub(/[[:space:]]+/, ' ')
