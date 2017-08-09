@@ -134,31 +134,8 @@ module PgHero
       true
     end
 
-<<<<<<< HEAD
-    def select_all(sql)
-      # squish for logs
-      connection.select_all(squish(sql)).to_a
-    end
-
-    def execute(sql)
-      connection.execute(sql)
-    end
-    
-    def db_version
-      @db_version ||= connection.select_value("SELECT current_setting('server_version_num')").to_i
-    end
-    
-    def connection
-      @connection ||= Connection.connection
-    end
-    
-    # from ActiveSupport
-    def squish(str)
-      str.to_s.gsub(/\A[[:space:]]+/, '').gsub(/[[:space:]]+\z/, '').gsub(/[[:space:]]+/, ' ')
-=======
     def pretty_size(value)
       ActiveSupport::NumberHelper.number_to_human_size(value, precision: 3)
->>>>>>> cacd76a029bf5e6889c68e3f96808690d6931d4c
     end
   end
 end
