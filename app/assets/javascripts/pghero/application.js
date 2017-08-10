@@ -1,16 +1,18 @@
-//= require ./jquery
-//= require ./jquery.nouislider.min
-//= require ./Chart.bundle
-//= require ./chartkick
-//= require ./highlight.pack
+require("./styles");
 
-function highlightQueries() {
+require("./jquery");
+require("./jquery.nouislider.min");
+require("./Chart.bundle");
+require("highlight.js");
+window.Chartkick = require("chartkick");
+
+window.highlightQueries = function() {
   $("pre code").each(function(i, block) {
     hljs.highlightBlock(block);
   });
 }
 
-function initSlider() {
+window.initSlider = function() {
   function roundTime(time) {
     var period = 1000 * 60 * 5;
     return new Date(Math.ceil(time.getTime() / period) * period);
