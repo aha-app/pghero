@@ -1,10 +1,11 @@
-require("./styles");
+require('./styles');
 
-require("./jquery");
-require("./jquery.nouislider.min");
-require("./Chart.bundle");
-require("highlight.js");
-window.Chartkick = require("chartkick");
+require('jquery');
+require('./jquery.nouislider.min');
+require('chart.js');
+
+var hljs = require('highlight.js');
+window.Chartkick = require('chartkick');
 
 window.highlightQueries = function() {
   $("pre code").each(function(i, block) {
