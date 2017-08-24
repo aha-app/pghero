@@ -5,6 +5,7 @@
 
     <meta charset="utf-8" />
     <%= javascript_include_tag *webpack_asset_paths('runtime', extension: 'js') %>
+    <%= javascript_include_tag *webpack_asset_paths('vendor', extension: 'js') %>
     <%= stylesheet_link_tag *webpack_asset_paths('pghero', extension: 'css') %>
     <%= javascript_include_tag *webpack_asset_paths('pghero', extension: 'js') %>
   </head>
