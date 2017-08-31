@@ -1,515 +1,141 @@
 require "pghero/version"
 require "active_record"
+
+# methods
+require "pghero/methods/basic"
+require "pghero/methods/connections"
+require "pghero/methods/explain"
+require "pghero/methods/indexes"
+require "pghero/methods/kill"
+require "pghero/methods/maintenance"
+require "pghero/methods/queries"
+require "pghero/methods/query_stats"
+require "pghero/methods/replication"
+require "pghero/methods/sequences"
+require "pghero/methods/space"
+require "pghero/methods/suggested_indexes"
+require "pghero/methods/system"
+require "pghero/methods/tables"
+require "pghero/methods/users"
+
+require "pghero/database"
 require "pghero/engine" if defined?(Rails)
 
+# models
+require "pghero/connection"
+require "pghero/query_stats"
+
 module PgHero
-  # hack for connection
-  class Connection < ActiveRecord::Base
-    establish_connection ENV["PGHERO_DATABASE_URL"] if ENV["PGHERO_DATABASE_URL"]
+  class NotEnabled < StandardError; end
+
+  # settings
+  class << self
+    attr_accessor :long_running_query_sec, :slow_query_ms, :slow_query_calls, :total_connections_threshold, :cache_hit_rate_threshold, :env, :show_migrations
   end
+  self.long_running_query_sec = (ENV["PGHERO_LONG_RUNNING_QUERY_SEC"] || 60).to_i
+  self.slow_query_ms = (ENV["PGHERO_SLOW_QUERY_MS"] || 20).to_i
+  self.slow_query_calls = (ENV["PGHERO_SLOW_QUERY_CALLS"] || 100).to_i
+  self.total_connections_threshold = (ENV["PGHERO_TOTAL_CONNECTIONS_THRESHOLD"] || 100).to_i
+  self.cache_hit_rate_threshold = 99
+  self.env = ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
+  self.show_migrations = true
 
   class << self
-    attr_accessor :long_running_query_sec, :slow_query_ms, :slow_query_calls
-  end
-  self.long_running_query_sec = 60
-  self.slow_query_ms = 20
-  self.slow_query_calls = 100
+    extend Forwardable
+    def_delegators :primary_database, :access_key_id, :analyze, :analyze_tables, :autoindex, :autovacuum_danger,
+      :best_index, :blocked_queries, :connection_sources, :connection_stats,
+      :cpu_usage, :create_user, :database_size, :db_instance_identifier, :disable_query_stats, :drop_user,
+      :duplicate_indexes, :enable_query_stats, :explain, :historical_query_stats_enabled?, :index_caching,
+      :index_hit_rate, :index_usage, :indexes, :invalid_indexes, :kill, :kill_all, :kill_long_running_queries,
+      :last_stats_reset_time, :long_running_queries, :maintenance_info, :missing_indexes, :query_stats,
+      :query_stats_available?, :query_stats_enabled?, :query_stats_extension_enabled?, :query_stats_readable?,
+      :rds_stats, :read_iops_stats, :region, :relation_sizes, :replica?, :replication_lag, :replication_lag_stats,
+      :reset_query_stats, :reset_stats, :running_queries, :secret_access_key, :sequence_danger, :sequences, :settings,
+      :slow_queries, :space_growth, :ssl_used?, :stats_connection, :suggested_indexes, :suggested_indexes_by_query,
+      :suggested_indexes_enabled?, :system_stats_enabled?, :table_caching, :table_hit_rate, :table_stats,
+      :total_connections, :transaction_id_danger, :unused_indexes, :unused_tables, :write_iops_stats
 
-  class << self
-
-    def running_queries
-      if db_version >= 90200
-        select_all %Q{
-          SELECT
-            pid,
-            state,
-            application_name AS source,
-            age(now(), xact_start) AS duration,
-            waiting,
-            query,
-            xact_start AS started_at
-          FROM
-            pg_stat_activity
-          WHERE
-            query <> '<insufficient privilege>'
-            AND state <> 'idle'
-            AND pid <> pg_backend_pid()
-          ORDER BY
-            query_start DESC
-        }
-      else
-        select_all %Q{
-          SELECT
-            procpid as pid,
-            null as state,
-            application_name AS source,
-            age(now(), xact_start) AS duration,
-            waiting,
-            current_query as query,
-            xact_start AS started_at
-          FROM
-            pg_stat_activity
-          WHERE
-            current_query <> '<insufficient privilege>'
-            AND current_query <> '<IDLE>'
-            AND procpid <> pg_backend_pid()
-          ORDER BY
-            query_start DESC
-        }
-      end
+    def time_zone=(time_zone)
+      @time_zone = time_zone.is_a?(ActiveSupport::TimeZone) ? time_zone : ActiveSupport::TimeZone[time_zone.to_s]
     end
 
-    def long_running_queries
-      if db_version >= 90200
-        select_all %Q{
-          SELECT
-            pid,
-            state,
-            application_name AS source,
-            age(now(), xact_start) AS duration,
-            waiting,
-            query,
-            xact_start AS started_at
-          FROM
-            pg_stat_activity
-          WHERE
-            query <> '<insufficient privilege>'
-            AND state <> 'idle'
-            AND pid <> pg_backend_pid()
-            AND now() - query_start > interval '#{long_running_query_sec.to_i} seconds'
-          ORDER BY
-            query_start DESC
-        }
-      else
-        select_all %Q{
-          SELECT
-            procpid as pid,
-            null as state,
-            application_name AS source,
-            age(now(), xact_start) AS duration,
-            waiting,
-            current_query as query,
-            xact_start AS started_at
-          FROM
-            pg_stat_activity
-          WHERE
-            current_query <> '<insufficient privilege>'
-            AND current_query <> '<IDLE>'
-            AND procpid <> pg_backend_pid()
-            AND now() - query_start > interval '#{long_running_query_sec.to_i} seconds'
-          ORDER BY
-            query_start DESC
-        }
-      end
+    def time_zone
+      @time_zone || Time.zone
     end
 
-    def locks
-      if db_version >= 90200
-        select_all %Q{
-          SELECT DISTINCT ON (pid)
-            pg_stat_activity.procpid,
-            pg_stat_activity.query,
-            age(now(), pg_stat_activity.query_start) AS age
-          FROM
-            pg_stat_activity
-          INNER JOIN
-            pg_locks ON pg_locks.pid = pg_stat_activity.procpid
-          WHERE
-            pg_stat_activity.query <> '<insufficient privilege>'
-            AND pg_locks.mode = 'ExclusiveLock'
-            AND pg_stat_activity.procpid <> pg_backend_pid()
-          ORDER BY
-            pid,
-            query_start
-        }
-      else
-        select_all %Q{
-          SELECT DISTINCT ON (procpid)
-            pg_stat_activity.procpid as pid,
-            pg_stat_activity.current_query as query,
-            age(now(), pg_stat_activity.query_start) AS age
-          FROM
-            pg_stat_activity
-          INNER JOIN
-            pg_locks ON pg_locks.pid = pg_stat_activity.procpid
-          WHERE
-            pg_stat_activity.current_query <> '<insufficient privilege>'
-            AND pg_locks.mode = 'ExclusiveLock'
-            AND pg_stat_activity.procpid <> pg_backend_pid()
-          ORDER BY
-            procpid,
-            query_start
-        }
-      end
-    end
+    def config
+      @config ||= begin
+        path = "config/pghero.yml"
 
-    def index_hit_rate
-      select_all(%Q{
-        SELECT
-          (sum(idx_blks_hit)) / nullif(sum(idx_blks_hit + idx_blks_read),0) AS rate
-        FROM
-          pg_statio_user_indexes
-      }).first["rate"].to_f
-    end
+        config_file_exists = File.exist?(path)
 
-    def table_hit_rate
-      select_all(%Q{
-        SELECT
-          sum(heap_blks_hit) / nullif(sum(heap_blks_hit) + sum(heap_blks_read),0) AS rate
-        FROM
-          pg_statio_user_tables
-      }).first["rate"].to_f
-    end
+        config = YAML.load(ERB.new(File.read(path)).result) if config_file_exists
+        config ||= {}
 
-    def index_usage
-      select_all %Q{
-        SELECT
-          relname AS table,
-          CASE idx_scan
-            WHEN 0 THEN 'Insufficient data'
-            ELSE (100 * idx_scan / (seq_scan + idx_scan))::text
-          END percent_of_times_index_used,
-          n_live_tup rows_in_table
-        FROM
-          pg_stat_user_tables
-        ORDER BY
-          n_live_tup DESC,
-          relname ASC
-       }
-    end
-
-    def missing_indexes
-      select_all %Q{
-        SELECT
-          relname AS table,
-          CASE idx_scan
-            WHEN 0 THEN 'Insufficient data'
-            ELSE (100 * idx_scan / (seq_scan + idx_scan))::text
-          END percent_of_times_index_used,
-          n_live_tup rows_in_table
-        FROM
-          pg_stat_user_tables
-        WHERE
-          idx_scan > 0
-          AND (100 * idx_scan / (seq_scan + idx_scan)) < 95
-          AND n_live_tup >= 10000
-        ORDER BY
-          n_live_tup DESC,
-          relname ASC
-       }
-    end
-
-    def unused_tables
-      select_all %Q{
-        SELECT
-          relname AS table,
-          n_live_tup rows_in_table
-        FROM
-          pg_stat_user_tables
-        WHERE
-          idx_scan = 0
-        ORDER BY
-          n_live_tup DESC,
-          relname ASC
-       }
-    end
-
-    def unused_indexes
-      select_all %Q{
-        SELECT
-          relname AS table,
-          indexrelname AS index,
-          pg_size_pretty(pg_relation_size(i.indexrelid)) AS index_size,
-          idx_scan as index_scans
-        FROM
-          pg_stat_user_indexes ui
-        INNER JOIN
-          pg_index i ON ui.indexrelid = i.indexrelid
-        WHERE
-          NOT indisunique
-          AND idx_scan < 50
-          AND pg_relation_size(i.indexrelid) > 1024 * 1024
-        ORDER BY
-          pg_relation_size(i.indexrelid) DESC,
-          relname ASC
-      }
-    end
-
-    def relation_sizes
-      select_all %Q{
-        SELECT
-          c.relname AS name,
-          CASE WHEN c.relkind = 'r' THEN 'table' ELSE 'index' END AS type,
-          pg_size_pretty(pg_table_size(c.oid)) AS size
-        FROM
-          pg_class c
-        LEFT JOIN
-          pg_namespace n ON (n.oid = c.relnamespace)
-        WHERE
-          n.nspname NOT IN ('pg_catalog', 'information_schema')
-          AND n.nspname !~ '^pg_toast'
-          AND c.relkind IN ('r', 'i')
-        ORDER BY
-          pg_table_size(c.oid) DESC,
-          name ASC
-      }
-    end
-
-    def database_size
-      select_all("SELECT pg_size_pretty(pg_database_size(current_database()))").first["pg_size_pretty"]
-    end
-
-    def kill(pid)
-      execute("SELECT pg_terminate_backend(#{pid.to_i})").first["pg_terminate_backend"] == "t"
-    end
-
-    def kill_all
-      select_all %Q{
-        SELECT
-          pg_terminate_backend(pid)
-        FROM
-          pg_stat_activity
-        WHERE
-          pid <> pg_backend_pid()
-          AND query <> '<insufficient privilege>'
-      }
-      true
-    end
-
-    # http://www.craigkerstiens.com/2013/01/10/more-on-postgres-performance/
-    def query_stats
-      if query_stats_enabled?
-        select_all %Q{
-          SELECT
-            query,
-            (total_time / 1000 / 60) as total_minutes,
-            (total_time / calls) as average_time,
-            calls
-          FROM
-            pg_stat_statements
-          INNER JOIN
-            pg_database ON pg_database.oid = pg_stat_statements.dbid
-          WHERE
-            pg_database.datname = current_database()
-          ORDER BY
-            total_minutes DESC
-          LIMIT 100
-        }
-      else
-        []
-      end
-    end
-
-    def slow_queries
-      if query_stats_enabled?
-        select_all %Q{
-          SELECT
-            query,
-            (total_time / 1000 / 60) as total_minutes,
-            (total_time / calls) as average_time,
-            calls
-          FROM
-            pg_stat_statements
-          INNER JOIN
-            pg_database ON pg_database.oid = pg_stat_statements.dbid
-          WHERE
-            pg_database.datname = current_database()
-            AND calls >= #{slow_query_calls.to_i}
-            AND (total_time / calls) >= #{slow_query_ms.to_i}
-          ORDER BY
-            total_minutes DESC
-          LIMIT 100
-        }
-      else
-        []
-      end
-    end
-
-    def query_stats_available?
-      select_all("SELECT COUNT(*) AS count FROM pg_available_extensions WHERE name = 'pg_stat_statements'").first["count"].to_i > 0
-    end
-
-    def query_stats_enabled?
-      select_all("SELECT COUNT(*) AS count FROM pg_extension WHERE extname = 'pg_stat_statements'").first["count"].to_i > 0 && query_stats_readable?
-    end
-
-    def query_stats_readable?
-      begin
-        # ensure the user has access to the table
-        select_all("SELECT has_table_privilege(current_user, 'pg_stat_statements', 'SELECT')").first["has_table_privilege"] == "t"
-      rescue ActiveRecord::StatementInvalid
-        false
-      end
-    end
-
-    def enable_query_stats
-      execute("CREATE EXTENSION pg_stat_statements")
-    end
-
-    def disable_query_stats
-      execute("DROP EXTENSION IF EXISTS pg_stat_statements")
-      true
-    end
-
-    def reset_query_stats
-      if query_stats_enabled?
-        execute("SELECT pg_stat_statements_reset()")
-        true
-      else
-        false
-      end
-    end
-
-    def cpu_usage
-      if system_stats_enabled?
-        cw = AWS::CloudWatch.new(access_key_id: access_key_id, secret_access_key: secret_access_key)
-        now = Time.now
-        resp = cw.client.get_metric_statistics(
-          namespace: "AWS/RDS",
-          metric_name: "CPUUtilization",
-          dimensions: [{name: "DBInstanceIdentifier", value: db_instance_identifier}],
-          start_time: (now - 1 * 3600).iso8601,
-          end_time: now.iso8601,
-          period: 60,
-          statistics: ["Average"]
-        )
-        data = {}
-        resp[:datapoints].sort_by{|d| d[:timestamp] }.each do |d|
-          data[d[:timestamp]] = d[:average]
+        if config[env]
+          config[env]
+        elsif config["databases"] # preferred format
+          config
+        elsif config_file_exists
+          raise "Invalid config file"
+        else
+          {
+            "databases" => {
+              "primary" => {
+                "url" => ENV["PGHERO_DATABASE_URL"] || ActiveRecord::Base.connection_config,
+                "db_instance_identifier" => ENV["PGHERO_DB_INSTANCE_IDENTIFIER"]
+              }
+            }
+          }
         end
-        data
-      else
-        {}
       end
     end
 
-    def system_stats_enabled?
-      !!(defined?(AWS) && access_key_id && secret_access_key && db_instance_identifier)
-    end
-
-    def random_password
-      require "securerandom"
-      SecureRandom.base64(40).delete("+/=")[0...24]
-    end
-
-    def create_user(user, options = {})
-      password = options[:password] || random_password
-      schema = options[:schema] || "public"
-      database = options[:database] || Connection.connection_config[:database]
-
-      commands =
-        [
-          "CREATE ROLE #{user} LOGIN PASSWORD #{Connection.connection.quote(password)}",
-          "GRANT CONNECT ON DATABASE #{database} TO #{user}",
-          "GRANT USAGE ON SCHEMA #{schema} TO #{user}"
+    def databases
+      @databases ||= begin
+        Hash[
+          config["databases"].map do |id, c|
+            [id.to_sym, PgHero::Database.new(id, c)]
+          end
         ]
-      if options[:readonly]
-        commands << "GRANT SELECT ON ALL TABLES IN SCHEMA #{schema} TO #{user}"
-        commands << "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} GRANT SELECT ON TABLES TO #{user}"
-      else
-        commands << "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA #{schema} TO #{user}"
-        commands << "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA #{schema} TO #{user}"
-        commands << "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} GRANT ALL PRIVILEGES ON TABLES TO #{user}"
-        commands << "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} GRANT ALL PRIVILEGES ON SEQUENCES TO #{user}"
       end
-
-      # run commands
-      Connection.transaction do
-        commands.each do |command|
-          execute command
-        end
-      end
-
-      {password: password}
     end
 
-    def drop_user(user, options = {})
-      schema = options[:schema] || "public"
-      database = options[:database] || Connection.connection_config[:database]
+    def primary_database
+      databases.values.first
+    end
 
-      # thanks shiftb
-      commands =
-        [
-          "REVOKE CONNECT ON DATABASE #{database} FROM #{user}",
-          "REVOKE USAGE ON SCHEMA #{schema} FROM #{user}",
-          "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA #{schema} FROM #{user}",
-          "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA #{schema} FROM #{user}",
-          "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} REVOKE SELECT ON TABLES FROM #{user}",
-          "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} REVOKE SELECT ON SEQUENCES FROM #{user}",
-          "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} REVOKE ALL ON SEQUENCES FROM #{user}",
-          "ALTER DEFAULT PRIVILEGES IN SCHEMA #{schema} REVOKE ALL ON TABLES FROM #{user}",
-          "DROP ROLE #{user}"
-        ]
-
-      # run commands
-      Connection.transaction do
-        commands.each do |command|
-          execute command
-        end
+    def capture_query_stats
+      databases.each do |_, database|
+        database.capture_query_stats
       end
-
       true
     end
 
-    def access_key_id
-      ENV["PGHERO_ACCESS_KEY_ID"] || ENV["AWS_ACCESS_KEY_ID"]
-    end
-
-    def secret_access_key
-      ENV["PGHERO_SECRET_ACCESS_KEY"] || ENV["AWS_SECRET_ACCESS_KEY"]
-    end
-
-    def db_instance_identifier
-      ENV["PGHERO_DB_INSTANCE_IDENTIFIER"]
-    end
-
-    def explain(sql)
-      sql = squish(sql)
-      explanation = nil
-      explain_safe = explain_safe?
-
-      # use transaction for safety
-      Connection.transaction do
-        if !explain_safe and (sql.sub(/;\z/, "").include?(";") or sql.upcase.include?("COMMIT"))
-          raise ActiveRecord::StatementInvalid, "Unsafe statement"
-        end
-        explanation = select_all("EXPLAIN #{sql}").map{|v| v["QUERY PLAN"] }.join("\n")
-        raise ActiveRecord::Rollback
+    def capture_space_stats
+      databases.each do |_, database|
+        database.capture_space_stats
       end
-
-      explanation
+      true
     end
 
-    def explain_safe?
-      begin
-        select_all("SELECT 1; SELECT 1")
-        false
-      rescue ActiveRecord::StatementInvalid
-        true
+    def analyze_all(**options)
+      databases.reject { |_, d| d.replica? }.each do |_, database|
+        database.analyze_tables(**options)
       end
+      true
     end
 
-    def select_all(sql)
-      # squish for logs
-      connection.select_all(squish(sql)).to_a
+    def autoindex_all(create: false)
+      databases.each do |_, database|
+        puts "Autoindexing #{database}..."
+        database.autoindex(create: create)
+      end
+      true
     end
 
-    def execute(sql)
-      connection.execute(sql)
+    def pretty_size(value)
+      ActiveSupport::NumberHelper.number_to_human_size(value, precision: 3)
     end
-    
-    def db_version
-      @db_version ||= connection.select_value("SELECT current_setting('server_version_num')").to_i
-    end
-    
-    def connection
-      @connection ||= Connection.connection
-    end
-    
-    # from ActiveSupport
-    def squish(str)
-      str.to_s.gsub(/\A[[:space:]]+/, '').gsub(/[[:space:]]+\z/, '').gsub(/[[:space:]]+/, ' ')
-    end
-
   end
 end
