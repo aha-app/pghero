@@ -1,6 +1,6 @@
 {
   "name": "@aha-app/pghero",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "The Aha! fork of pghero. Compatible with webpack",
   "main": "app/assets/javascripts/pghero/application.js",
   "files": [
