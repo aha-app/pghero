@@ -20,6 +20,6 @@
     "chart.js": "2.5.0",
     "chartkick": "^2.2.4",
     "highlight.js": "^9.12.0",
-    "jquery": "^1.11.1"
+    "jquery": "^3.5.1"
   }
 }
