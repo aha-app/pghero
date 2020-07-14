@@ -1,6 +1,6 @@
 {
   "name": "@aha-app/pghero",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "The Aha! fork of pghero. Compatible with webpack",
   "main": "app/assets/javascripts/pghero/application.js",
   "files": [
@@ -20,6 +20,6 @@
     "chart.js": "2.5.0",
     "chartkick": "^2.2.4",
     "highlight.js": "^9.12.0",
-    "jquery": "^1.11.1"
+    "jquery": "^3.5.1"
   }
 }
